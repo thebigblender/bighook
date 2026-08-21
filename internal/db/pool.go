@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func initDB(ctx context.Context) *pgxpool.Pool {
+func InitDB(ctx context.Context) *pgxpool.Pool {
 	//read DSN
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {

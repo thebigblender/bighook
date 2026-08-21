@@ -1,4 +1,4 @@
-package main
+package handler
 
 import (
 	"encoding/json"
@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/bigblender2115/bighook/db"
+	"github.com/bigblender2115/bighook/internal/db"
 )
 
 type IngestionRequest struct {

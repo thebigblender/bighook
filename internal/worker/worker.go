@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"bytes"
@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bigblender2115/bighook/db"
+	"github.com/bigblender2115/bighook/internal/db"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
