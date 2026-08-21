@@ -3,53 +3,27 @@ package main
 import (
 	"context"
 	"log"
-	"time"
-	"os"
+	"net/http"
+	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/bigblender2115/bighook/db"
 )
-
-func initDB(ctx context.Context) *pgxpool.Pool {
-	//read DSN
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		log.Fatal("DATABASE_URL not set")
-	}
-
-	//parse DSN into a pool config
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		log.Fatalf("Unable to parse DATABASE_URL: %v", err)
-	}
-
-	//pool settings config
-	config.MaxConns = 25
-	config.MinConns = 5
-	config.MaxConnLifetime = time.Hour
-	config.MaxConnIdleTime = 30 * time.Minute
-
-	//open connection pool
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		log.Fatalf("Unable to create connection pool: %v", err)
-	}
-
-	//ping db to verify connection
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		log.Fatalf("Unable to ping database: %v", err)
-	}
-
-	log.Println("Database connection successful")
-	return pool
-}
 
 func main() {
 	ctx := context.Background()
+	pool := initDB(ctx)
+	defer pool.Close()
 
-	dbPool := initDB(ctx)
-	defer dbPool.Close()
+	queries := db.New(pool)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /events", HandleIngestionEvent(pool, queries))
+
+	worker := NewWorker(pool, queries)
+	go worker.Start(ctx)
+
+	fmt.Println("listening on :8080")
+	if err := http.ListenAndServe(":8080", mux); err != nil {
+		log.Fatal(err)
+	}
 }
