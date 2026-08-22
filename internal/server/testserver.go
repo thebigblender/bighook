@@ -5,7 +5,17 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 )
+
+func verifySignature(secret string, payload []byte, sig string) bool {
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write(payload)
+    expected := hex.EncodeToString(mac.Sum(nil))
+    return hmac.Equal([]byte(expected), []byte(sig))
+}
 
 func main() {
 	http.HandleFunc("POST /webhook", func(w http.ResponseWriter, r *http.Request) {
@@ -17,7 +27,13 @@ func main() {
 		defer r.Body.Close()
 
 		log.Printf("Received Webhook on :9000:\n  Headers: %v\n  Body: %s\n", r.Header, string(body))
-		
+
+		sig := r.Header.Get("X-Bighook-Event-Id")
+		if !verifySignature("", body, sig) {
+			http.Error(w, "Invalid signature", http.StatusBadRequest)
+			return
+		}
+
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"received": true}`))
 	})

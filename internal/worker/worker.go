@@ -3,8 +3,12 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"time"
+	
 
 	"github.com/bigblender2115/bighook/internal/db"
 	"github.com/google/uuid"
@@ -42,9 +46,18 @@ func (w *Worker) Start(ctx context.Context) {
 	}
 }
 
+//calc backoff time
 func backoff(attempt int32) time.Duration {
 	return time.Duration(1<<attempt) * time.Second
 }
+
+//sign the payload
+func signPayload(secret string, payload []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
 
 func (w *Worker) poll(ctx context.Context) {
 	// pending deliveries
@@ -86,7 +99,19 @@ func (w *Worker) process(ctx context.Context, delivery db.ClaimPendingDeliveries
 
 	// 2. HTTP POST to url with payload, measure latency
 	start := time.Now()
-	resp, err := w.client.Post(endpoint.Url, "application/json", bytes.NewReader(event.Payload))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.Url, bytes.NewReader(event.Payload))
+	if err != nil {
+		w.log.Error().
+			Err(err).
+			Str("endpoint_url", endpoint.Url).
+			Msg("failed to create request")
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Bighook-Signature", signPayload(endpoint.Secret, event.Payload))//signed payload
+	resp, err := w.client.Do(req)
 	latency := int32(time.Since(start).Milliseconds())
 
 	//nil safe
