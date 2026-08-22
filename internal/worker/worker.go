@@ -10,19 +10,22 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog"
 )
 
 type Worker struct {
 	pool    *pgxpool.Pool
 	queries *db.Queries
 	client  *http.Client
+	log 	zerolog.Logger
 }
 
-func NewWorker(pool *pgxpool.Pool, queries *db.Queries) *Worker {
+func NewWorker(pool *pgxpool.Pool, queries *db.Queries, log zerolog.Logger) *Worker {
 	return &Worker{
 		pool:    pool,
 		queries: queries,
 		client:  &http.Client{Timeout: 5 * time.Second},
+		log:     log,
 	}
 }
 
@@ -30,6 +33,7 @@ func (w *Worker) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			w.log.Info().Msg("worker shutting down")
 			return
 		default:
 			w.poll(ctx)
@@ -46,11 +50,15 @@ func (w *Worker) poll(ctx context.Context) {
 	// pending deliveries
 	deliveries, err := w.queries.ClaimPendingDeliveries(ctx)
 	if err != nil {
+		w.log.Error().Err(err).Msg("failed to claim pending deliveries")
 		return
 	}
 
 	// for each claimed delivery, "process" it
 	for _, delivery := range deliveries {
+		w.log.Debug().
+			Str("delivery_id", delivery.ID.String()).
+			Msg("processing delivery")
 		go w.process(ctx, delivery)
 	}
 }
@@ -59,11 +67,20 @@ func (w *Worker) process(ctx context.Context, delivery db.ClaimPendingDeliveries
 	// 1. fetch event and endpoint for the delivery
 	event, err := w.queries.GetEventByID(ctx, delivery.EventID)
 	if err != nil {
+		w.log.Error().
+			Err(err).
+			Str("event_id", delivery.EventID.String()).
+			Msg("failed to fetch event")
 		return
 	}
 
 	endpoint, err := w.queries.GetEndpointByID(ctx, delivery.EndpointID)
 	if err != nil {
+		w.log.
+			Error().
+			Err(err).
+			Str("endpoint_id", delivery.EndpointID.String()).
+			Msg("failed to fetch endpoint for delivery")
 		return
 	}
 
@@ -88,37 +105,64 @@ func (w *Worker) process(ctx context.Context, delivery db.ClaimPendingDeliveries
 	attemptNumber := delivery.AttemptCount + 1
 	isSuccess := err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300
 
-	
+	// 3. Update delivery state based on success, retry, or dead letter exhaustion
 	if isSuccess {
-		_ = w.queries.MarkDelivered(ctx, delivery.ID)
-		_ = w.queries.InsertDeliveryAttempt(ctx, db.InsertDeliveryAttemptParams{
-			ID:            attemptID,
-			DeliveryID:    delivery.ID,
-			AttemptNumber: attemptNumber,
-			HttpStatus:    httpStatus,
-			LatencyMs:     latency,
-			Error:         errMsg,
-		})
-		return
-	}
+		if err := w.queries.MarkDelivered(ctx, delivery.ID); err != nil {
+			w.log.Error().Err(err).Str("delivery_id", delivery.ID.String()).Msg("failed to mark delivered")
+		}
 
-	
-	if attemptNumber >= delivery.MaxAttempts {
-		_ = w.queries.MarkDead(ctx, delivery.ID)
+		w.log.Info().
+			Str("delivery_id", delivery.ID.String()).
+			Str("endpoint_url", endpoint.Url).
+			Int32("attempt", attemptNumber).
+			Int32("latency_ms", latency).
+			Int("http_status", resp.StatusCode).
+			Msg("delivery successful")
+		
+	} else if attemptNumber >= delivery.MaxAttempts {
+		if err := w.queries.MarkDead(ctx, delivery.ID); err != nil {
+			w.log.Error().Err(err).Str("delivery_id", delivery.ID.String()).Msg("failed to mark dead")
+		}
+
+		w.log.Error().
+			Str("delivery_id", delivery.ID.String()).
+			Msg("delivery exhausted, marking dead")
 	} else {
 		nextAttempt := time.Now().Add(backoff(delivery.AttemptCount))
-		_ = w.queries.MarkFailedWithRetry(ctx, db.MarkFailedWithRetryParams{
+		if err := w.queries.MarkFailedWithRetry(ctx, db.MarkFailedWithRetryParams{
 			ID:            delivery.ID,
 			NextAttemptAt: pgtype.Timestamptz{Time: nextAttempt, Valid: true},
-		})
+		}); err != nil {
+			w.log.Error().Err(err).Str("delivery_id", delivery.ID.String()).Msg("failed to mark failed with retry")
+		}
+
+		//doing this weird shit to avoid logging the http status code when err != nil
+		warnEvent := w.log.Warn().
+			Str("delivery_id", delivery.ID.String()).
+			Str("endpoint_url", endpoint.Url).
+			Int32("attempt", attemptNumber).
+			Int32("latency_ms", latency)
+
+		if err != nil {
+			warnEvent.Err(err).Msg("delivery failed with retry")
+		} else {
+			warnEvent.Int("http_status", resp.StatusCode).Msg("delivery failed with retry")
+		}
 	}
 
-	_ = w.queries.InsertDeliveryAttempt(ctx, db.InsertDeliveryAttemptParams{
+	// 4. Record delivery attempt
+	if err := w.queries.InsertDeliveryAttempt(ctx, db.InsertDeliveryAttemptParams{
 		ID:            attemptID,
 		DeliveryID:    delivery.ID,
 		AttemptNumber: attemptNumber,
 		HttpStatus:    httpStatus,
 		LatencyMs:     latency,
 		Error:         errMsg,
-	})
+	}); err != nil {
+		w.log.Error().Err(err).Str("attempt_id", attemptID.String()).Msg("failed to record delivery attempt")
+	} else {
+		w.log.Info().
+			Str("attempt_id", attemptID.String()).
+			Msg("delivery attempt recorded")
+	}
 }
