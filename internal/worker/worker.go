@@ -6,9 +6,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
-	
 
 	"github.com/bigblender2115/bighook/internal/db"
 	"github.com/google/uuid"
@@ -52,10 +53,11 @@ func backoff(attempt int32) time.Duration {
 }
 
 //sign the payload
-func signPayload(secret string, payload []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(payload)
-	return hex.EncodeToString(mac.Sum(nil))
+func signPayload(secret string, payload []byte, timestamp int64) string {
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write([]byte(fmt.Sprintf("%d.", timestamp)))
+    mac.Write(payload)
+    return hex.EncodeToString(mac.Sum(nil))
 }
 
 
@@ -110,7 +112,9 @@ func (w *Worker) process(ctx context.Context, delivery db.ClaimPendingDeliveries
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Bighook-Signature", signPayload(endpoint.Secret, event.Payload))//signed payload
+	timestamp := time.Now().Unix()
+	req.Header.Set("X-Bighook-Signature", signPayload(endpoint.Secret, event.Payload, timestamp))//signed payload
+	req.Header.Set("X-Bighook-Timestamp", strconv.FormatInt(timestamp, 10))
 	resp, err := w.client.Do(req)
 	latency := int32(time.Since(start).Milliseconds())
 

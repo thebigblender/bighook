@@ -8,10 +8,21 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
+	"time"
 )
 
-func verifySignature(secret string, payload []byte, sig string) bool {
+func verifyRequest(secret string, payload []byte, sig string, tsHeader string) bool {
+    ts, err := strconv.ParseInt(tsHeader, 10, 64)
+    if err != nil {
+        return false
+    }
+    // reject if older than 5 minutes
+    if time.Now().Unix()-ts > 300 {
+        return false
+    }
     mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write([]byte(fmt.Sprintf("%d.", ts)))
     mac.Write(payload)
     expected := hex.EncodeToString(mac.Sum(nil))
     return hmac.Equal([]byte(expected), []byte(sig))
@@ -29,7 +40,7 @@ func main() {
 		log.Printf("Received Webhook on :9000:\n  Headers: %v\n  Body: %s\n", r.Header, string(body))
 
 		sig := r.Header.Get("X-Bighook-Event-Id")
-		if !verifySignature("", body, sig) {
+		if !verifyRequest("", body, sig, r.Header.Get("X-Bighook-Timestamp")) {
 			http.Error(w, "Invalid signature", http.StatusBadRequest)
 			return
 		}
