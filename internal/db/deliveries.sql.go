@@ -125,3 +125,16 @@ func (q *Queries) MarkFailedWithRetry(ctx context.Context, arg MarkFailedWithRet
 	_, err := q.db.Exec(ctx, markFailedWithRetry, arg.ID, arg.NextAttemptAt)
 	return err
 }
+
+const reapStuckDeliveries = `-- name: ReapStuckDeliveries :exec
+UPDATE deliveries
+SET status = 'pending',
+    updated_at = NOW()
+WHERE status = 'in_flight'
+AND updated_at < NOW() - INTERVAL '10 minutes'
+`
+
+func (q *Queries) ReapStuckDeliveries(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, reapStuckDeliveries)
+	return err
+}

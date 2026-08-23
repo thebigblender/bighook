@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/bigblender2115/bighook/internal/db"
@@ -22,7 +23,8 @@ type Worker struct {
 	pool    *pgxpool.Pool
 	queries *db.Queries
 	client  *http.Client
-	log 	zerolog.Logger
+	log     zerolog.Logger
+	wg      sync.WaitGroup
 }
 
 func NewWorker(pool *pgxpool.Pool, queries *db.Queries, log zerolog.Logger) *Worker {
@@ -35,14 +37,20 @@ func NewWorker(pool *pgxpool.Pool, queries *db.Queries, log zerolog.Logger) *Wor
 }
 
 func (w *Worker) Start(ctx context.Context) {
+	pollTicker := time.NewTicker(5 * time.Second)
+	reapTicker := time.NewTicker(10 * time.Minute)
+	defer pollTicker.Stop()
+	defer reapTicker.Stop()
+	
 	for {
 		select {
 		case <-ctx.Done():
 			w.log.Info().Msg("worker shutting down")
 			return
-		default:
+		case <-pollTicker.C:
 			w.poll(ctx)
-			time.Sleep(5 * time.Second)
+		case <-reapTicker.C:
+			w.reap(ctx)
 		}
 	}
 }
@@ -60,6 +68,17 @@ func signPayload(secret string, payload []byte, timestamp int64) string {
     return hex.EncodeToString(mac.Sum(nil))
 }
 
+func (w *Worker) reap(ctx context.Context) {
+	if err := w.queries.ReapStuckDeliveries(ctx); err != nil {
+		w.log.Error().Err(err).Msg("reaper failed")
+		return
+	}
+	w.log.Info().Msg("reaper ran")
+}
+
+func (w *Worker) Wait() {
+	w.wg.Wait()
+}
 
 func (w *Worker) poll(ctx context.Context) {
 	// pending deliveries
@@ -74,7 +93,11 @@ func (w *Worker) poll(ctx context.Context) {
 		w.log.Debug().
 			Str("delivery_id", delivery.ID.String()).
 			Msg("processing delivery")
-		go w.process(ctx, delivery)
+		w.wg.Add(1)
+		go func(delivery db.ClaimPendingDeliveriesRow) {
+			defer w.wg.Done()
+			w.process(ctx, delivery)
+		}(delivery)
 	}
 }
 

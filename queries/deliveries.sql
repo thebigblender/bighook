@@ -46,3 +46,10 @@ UPDATE deliveries
     attempt_count = attempt_count + 1,
     updated_at = NOW()
 WHERE id = $1;
+
+-- name: ReapStuckDeliveries :exec
+UPDATE deliveries
+SET status = 'pending',
+    updated_at = NOW()
+WHERE status = 'in_flight'
+AND updated_at < NOW() - INTERVAL '10 minutes';
