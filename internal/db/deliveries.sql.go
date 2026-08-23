@@ -13,22 +13,27 @@ import (
 
 const claimPendingDeliveries = `-- name: ClaimPendingDeliveries :many
 WITH selected AS (
-    SELECT id, event_id, endpoint_id, status, attempt_count, max_attempts, next_attempt_at, created_at, updated_at FROM deliveries
-    WHERE status = 'pending' AND next_attempt_at <= NOW()
-    ORDER BY next_attempt_at ASC 
-    LIMIT 1
-    FOR UPDATE SKIP LOCKED
+    SELECT d.id FROM deliveries d
+    WHERE d.status = 'pending' AND d.next_attempt_at <= NOW()
+    ORDER BY d.next_attempt_at ASC
+    LIMIT 50
+    FOR UPDATE OF d SKIP LOCKED
 )
 UPDATE deliveries d
 SET status = 'in_flight', updated_at = NOW()
-FROM selected
+FROM selected, events e, endpoints ep
 WHERE d.id = selected.id
+  AND e.id = d.event_id
+  AND ep.id = d.endpoint_id
 RETURNING
     d.id,
     d.event_id,
     d.endpoint_id,
     d.attempt_count,
-    d.max_attempts
+    d.max_attempts,
+    e.payload,
+    ep.url,
+    ep.secret
 `
 
 type ClaimPendingDeliveriesRow struct {
@@ -37,6 +42,9 @@ type ClaimPendingDeliveriesRow struct {
 	EndpointID   pgtype.UUID `json:"endpoint_id"`
 	AttemptCount int32       `json:"attempt_count"`
 	MaxAttempts  int32       `json:"max_attempts"`
+	Payload      []byte      `json:"payload"`
+	Url          string      `json:"url"`
+	Secret       string      `json:"secret"`
 }
 
 func (q *Queries) ClaimPendingDeliveries(ctx context.Context) ([]ClaimPendingDeliveriesRow, error) {
@@ -54,6 +62,9 @@ func (q *Queries) ClaimPendingDeliveries(ctx context.Context) ([]ClaimPendingDel
 			&i.EndpointID,
 			&i.AttemptCount,
 			&i.MaxAttempts,
+			&i.Payload,
+			&i.Url,
+			&i.Secret,
 		); err != nil {
 			return nil, err
 		}

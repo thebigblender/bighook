@@ -11,22 +11,27 @@ WHERE id = $1;
 
 -- name: ClaimPendingDeliveries :many
 WITH selected AS (
-    SELECT * FROM deliveries
-    WHERE status = 'pending' AND next_attempt_at <= NOW()
-    ORDER BY next_attempt_at ASC 
-    LIMIT 1
-    FOR UPDATE SKIP LOCKED
+    SELECT d.id FROM deliveries d
+    WHERE d.status = 'pending' AND d.next_attempt_at <= NOW()
+    ORDER BY d.next_attempt_at ASC
+    LIMIT 50
+    FOR UPDATE OF d SKIP LOCKED
 )
 UPDATE deliveries d
 SET status = 'in_flight', updated_at = NOW()
-FROM selected
+FROM selected, events e, endpoints ep
 WHERE d.id = selected.id
+  AND e.id = d.event_id
+  AND ep.id = d.endpoint_id
 RETURNING
     d.id,
     d.event_id,
     d.endpoint_id,
     d.attempt_count,
-    d.max_attempts;
+    d.max_attempts,
+    e.payload,
+    ep.url,
+    ep.secret;
 
 
 -- name: MarkFailedWithRetry :exec

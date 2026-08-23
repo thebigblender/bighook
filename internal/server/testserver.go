@@ -39,8 +39,8 @@ func main() {
 
 		log.Printf("Received Webhook on :9000:\n  Headers: %v\n  Body: %s\n", r.Header, string(body))
 
-		sig := r.Header.Get("X-Bighook-Event-Id")
-		if !verifyRequest("", body, sig, r.Header.Get("X-Bighook-Timestamp")) {
+		sig := r.Header.Get("X-Bighook-Signature")
+		if sig != "" && !verifyRequest("test-secret", body, sig, r.Header.Get("X-Bighook-Timestamp")) && !verifyRequest("", body, sig, r.Header.Get("X-Bighook-Timestamp")) {
 			http.Error(w, "Invalid signature", http.StatusBadRequest)
 			return
 		}

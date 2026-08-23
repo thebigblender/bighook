@@ -28,27 +28,45 @@ type Worker struct {
 }
 
 func NewWorker(pool *pgxpool.Pool, queries *db.Queries, log zerolog.Logger) *Worker {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 1000
+	t.MaxIdleConnsPerHost = 200
+	t.IdleConnTimeout = 90 * time.Second
+
 	return &Worker{
 		pool:    pool,
 		queries: queries,
-		client:  &http.Client{Timeout: 5 * time.Second},
+		client:  &http.Client{Timeout: 5 * time.Second, Transport: t},
 		log:     log,
 	}
 }
 
 func (w *Worker) Start(ctx context.Context) {
-	pollTicker := time.NewTicker(5 * time.Second)
 	reapTicker := time.NewTicker(10 * time.Minute)
-	defer pollTicker.Stop()
 	defer reapTicker.Stop()
-	
+
+	// run 4 concurrent poll loops
+	for i := 0; i < 4; i++ {
+		go func() {
+			pollTicker := time.NewTicker(500 * time.Millisecond)
+			defer pollTicker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-pollTicker.C:
+					w.poll(ctx)
+				}
+			}
+		}()
+	}
+
+	// reaper on main goroutine
 	for {
 		select {
 		case <-ctx.Done():
 			w.log.Info().Msg("worker shutting down")
 			return
-		case <-pollTicker.C:
-			w.poll(ctx)
 		case <-reapTicker.C:
 			w.reap(ctx)
 		}
@@ -102,41 +120,21 @@ func (w *Worker) poll(ctx context.Context) {
 }
 
 func (w *Worker) process(ctx context.Context, delivery db.ClaimPendingDeliveriesRow) {
-	// 1. fetch event and endpoint for the delivery
-	event, err := w.queries.GetEventByID(ctx, delivery.EventID)
-	if err != nil {
-		w.log.Error().
-			Err(err).
-			Str("event_id", delivery.EventID.String()).
-			Msg("failed to fetch event")
-		return
-	}
-
-	endpoint, err := w.queries.GetEndpointByID(ctx, delivery.EndpointID)
-	if err != nil {
-		w.log.
-			Error().
-			Err(err).
-			Str("endpoint_id", delivery.EndpointID.String()).
-			Msg("failed to fetch endpoint for delivery")
-		return
-	}
-
-	// 2. HTTP POST to url with payload, measure latency
+	// 1. HTTP POST to url with payload, measure latency
 	start := time.Now()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.Url, bytes.NewReader(event.Payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", delivery.Url, bytes.NewReader(delivery.Payload))
 	if err != nil {
 		w.log.Error().
 			Err(err).
-			Str("endpoint_url", endpoint.Url).
+			Str("endpoint_url", delivery.Url).
 			Msg("failed to create request")
 		return
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	timestamp := time.Now().Unix()
-	req.Header.Set("X-Bighook-Signature", signPayload(endpoint.Secret, event.Payload, timestamp))//signed payload
+	req.Header.Set("X-Bighook-Signature", signPayload(delivery.Secret, delivery.Payload, timestamp))//signed payload
 	req.Header.Set("X-Bighook-Timestamp", strconv.FormatInt(timestamp, 10))
 	resp, err := w.client.Do(req)
 	latency := int32(time.Since(start).Milliseconds())
@@ -165,7 +163,7 @@ func (w *Worker) process(ctx context.Context, delivery db.ClaimPendingDeliveries
 
 		w.log.Info().
 			Str("delivery_id", delivery.ID.String()).
-			Str("endpoint_url", endpoint.Url).
+			Str("endpoint_url", delivery.Url).
 			Int32("attempt", attemptNumber).
 			Int32("latency_ms", latency).
 			Int("http_status", resp.StatusCode).
@@ -191,7 +189,7 @@ func (w *Worker) process(ctx context.Context, delivery db.ClaimPendingDeliveries
 		//doing this weird shit to avoid logging the http status code when err != nil
 		warnEvent := w.log.Warn().
 			Str("delivery_id", delivery.ID.String()).
-			Str("endpoint_url", endpoint.Url).
+			Str("endpoint_url", delivery.Url).
 			Int32("attempt", attemptNumber).
 			Int32("latency_ms", latency)
 
