@@ -24,6 +24,7 @@ type IngestionRequest struct {
 type IngestionResponse struct {
 	EventID    string `json:"event_id"`
 	DeliveryID string `json:"delivery_id"`
+	Sequence   int64  `json:"sequence"`
 	Status     string `json:"status"`
 }
 
@@ -87,6 +88,20 @@ func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.L
 
 		qtx := queries.WithTx(tx)
 
+		// allocate the delivery's per-endpoint sequence number inside the tx
+		seq, err := qtx.AllocateEndpointSequence(ctx, pgEndpointID)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign key violation
+				reqLog.Warn().Msg("endpoint not found")
+				sendJSONError(w, "endpoint not found", http.StatusNotFound)
+			} else {
+				reqLog.Error().Err(err).Msg("failed to allocate sequence")
+				sendJSONError(w, "internal server error", http.StatusInternalServerError)
+			}
+			return
+		}
+
 		err = qtx.InsertEvent(ctx, db.InsertEventParams{
 			ID:         pgEventID,
 			EndpointID: pgEndpointID,
@@ -109,6 +124,7 @@ func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.L
 			ID:         pgDeliveryID,
 			EventID:    pgEventID,
 			EndpointID: pgEndpointID,
+			Seq:        seq,
 		})
 		if err != nil {
 			reqLog.Error().Err(err).Msg("failed to schedule delivery")
@@ -131,6 +147,7 @@ func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.L
 		json.NewEncoder(w).Encode(IngestionResponse{
 			EventID:    eventRaw.String(),
 			DeliveryID: deliveryRaw.String(),
+			Sequence:   seq,
 			Status:     "pending",
 		})
 	}

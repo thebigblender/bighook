@@ -1,6 +1,6 @@
 -- name: InsertDelivery :exec
-INSERT INTO deliveries (id, event_id, endpoint_id, status, attempt_count, reap_count, next_attempt_at, created_at, updated_at)
-VALUES ($1, $2, $3, 'pending', 0, 0, NOW(), NOW(), NOW());
+INSERT INTO deliveries (id, event_id, endpoint_id, status, attempt_count, reap_count, seq, next_attempt_at, created_at, updated_at)
+VALUES ($1, $2, $3, 'pending', 0, 0, $4, NOW(), NOW(), NOW());
 
 
 -- name: MarkDelivered :exec
@@ -29,6 +29,7 @@ RETURNING
     d.endpoint_id,
     d.attempt_count,
     d.max_attempts,
+    d.seq,
     e.payload,
     ep.url,
     ep.secret;

@@ -7,6 +7,7 @@ CREATE TABLE deliveries (
     attempt_count INTEGER NOT NULL DEFAULT 0,
     reap_count INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,
+    seq BIGINT NOT NULL, -- per-endpoint sequence number assigned at ingestion, for gap/reorder detection
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

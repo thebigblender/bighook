@@ -31,6 +31,7 @@ RETURNING
     d.endpoint_id,
     d.attempt_count,
     d.max_attempts,
+    d.seq,
     e.payload,
     ep.url,
     ep.secret
@@ -42,6 +43,7 @@ type ClaimPendingDeliveriesRow struct {
 	EndpointID   pgtype.UUID `json:"endpoint_id"`
 	AttemptCount int32       `json:"attempt_count"`
 	MaxAttempts  int32       `json:"max_attempts"`
+	Seq          int64       `json:"seq"`
 	Payload      []byte      `json:"payload"`
 	Url          string      `json:"url"`
 	Secret       string      `json:"secret"`
@@ -62,6 +64,7 @@ func (q *Queries) ClaimPendingDeliveries(ctx context.Context) ([]ClaimPendingDel
 			&i.EndpointID,
 			&i.AttemptCount,
 			&i.MaxAttempts,
+			&i.Seq,
 			&i.Payload,
 			&i.Url,
 			&i.Secret,
@@ -77,18 +80,24 @@ func (q *Queries) ClaimPendingDeliveries(ctx context.Context) ([]ClaimPendingDel
 }
 
 const insertDelivery = `-- name: InsertDelivery :exec
-INSERT INTO deliveries (id, event_id, endpoint_id, status, attempt_count, reap_count, next_attempt_at, created_at, updated_at)
-VALUES ($1, $2, $3, 'pending', 0, 0, NOW(), NOW(), NOW())
+INSERT INTO deliveries (id, event_id, endpoint_id, status, attempt_count, reap_count, seq, next_attempt_at, created_at, updated_at)
+VALUES ($1, $2, $3, 'pending', 0, 0, $4, NOW(), NOW(), NOW())
 `
 
 type InsertDeliveryParams struct {
 	ID         pgtype.UUID `json:"id"`
 	EventID    pgtype.UUID `json:"event_id"`
 	EndpointID pgtype.UUID `json:"endpoint_id"`
+	Seq        int64       `json:"seq"`
 }
 
 func (q *Queries) InsertDelivery(ctx context.Context, arg InsertDeliveryParams) error {
-	_, err := q.db.Exec(ctx, insertDelivery, arg.ID, arg.EventID, arg.EndpointID)
+	_, err := q.db.Exec(ctx, insertDelivery,
+		arg.ID,
+		arg.EventID,
+		arg.EndpointID,
+		arg.Seq,
+	)
 	return err
 }
 
@@ -149,7 +158,12 @@ WHERE status = 'in_flight'
 AND updated_at < $1
 `
 
-func (q *Queries) ReapStuckDeliveries(ctx context.Context, cutoff pgtype.Timestamptz, maxReaps int32) error {
-	_, err := q.db.Exec(ctx, reapStuckDeliveries, cutoff, maxReaps)
+type ReapStuckDeliveriesParams struct {
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	ReapCount int32              `json:"reap_count"`
+}
+
+func (q *Queries) ReapStuckDeliveries(ctx context.Context, arg ReapStuckDeliveriesParams) error {
+	_, err := q.db.Exec(ctx, reapStuckDeliveries, arg.UpdatedAt, arg.ReapCount)
 	return err
 }

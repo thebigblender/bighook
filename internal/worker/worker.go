@@ -147,6 +147,7 @@ func (w *Worker) process(delivery db.ClaimPendingDeliveriesRow) {
 	timestamp := time.Now().Unix()
 	req.Header.Set("X-Bighook-Signature", signPayload(delivery.Secret, delivery.Payload, timestamp))
 	req.Header.Set("X-Bighook-Timestamp", strconv.FormatInt(timestamp, 10))
+	req.Header.Set("X-Bighook-Sequence", strconv.FormatInt(delivery.Seq, 10))
 
 	resp, err := w.client.Do(req)
 	latency := int32(time.Since(start).Milliseconds())

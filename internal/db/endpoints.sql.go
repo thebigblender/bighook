@@ -11,15 +11,37 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const allocateEndpointSequence = `-- name: AllocateEndpointSequence :one
+UPDATE endpoints
+SET sequence = sequence + 1
+WHERE id = $1
+RETURNING sequence
+`
+
+// atomically bumps and returns the endpoint's sequence counter; call inside the ingestion tx
+func (q *Queries) AllocateEndpointSequence(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, allocateEndpointSequence, id)
+	var sequence int64
+	err := row.Scan(&sequence)
+	return sequence, err
+}
+
 const getEndpointByID = `-- name: GetEndpointByID :one
 SELECT id, url, secret, created_at
 FROM endpoints
 WHERE id = $1
 `
 
-func (q *Queries) GetEndpointByID(ctx context.Context, id pgtype.UUID) (Endpoint, error) {
+type GetEndpointByIDRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Url       string             `json:"url"`
+	Secret    string             `json:"secret"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) GetEndpointByID(ctx context.Context, id pgtype.UUID) (GetEndpointByIDRow, error) {
 	row := q.db.QueryRow(ctx, getEndpointByID, id)
-	var i Endpoint
+	var i GetEndpointByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Url,
@@ -32,7 +54,7 @@ func (q *Queries) GetEndpointByID(ctx context.Context, id pgtype.UUID) (Endpoint
 const insertEndpoint = `-- name: InsertEndpoint :exec
 INSERT INTO endpoints(id, url, secret, created_at)
 VALUES(gen_random_uuid(), $1, $2, NOW())
-RETURNING id, url, secret, created_at
+RETURNING id, url, secret, sequence, created_at
 `
 
 type InsertEndpointParams struct {

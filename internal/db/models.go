@@ -14,7 +14,9 @@ type Delivery struct {
 	EndpointID    pgtype.UUID        `json:"endpoint_id"`
 	Status        string             `json:"status"`
 	AttemptCount  int32              `json:"attempt_count"`
+	ReapCount     int32              `json:"reap_count"`
 	MaxAttempts   int32              `json:"max_attempts"`
+	Seq           int64              `json:"seq"`
 	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
@@ -34,6 +36,7 @@ type Endpoint struct {
 	ID        pgtype.UUID        `json:"id"`
 	Url       string             `json:"url"`
 	Secret    string             `json:"secret"`
+	Sequence  int64              `json:"sequence"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
