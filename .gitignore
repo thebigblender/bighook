@@ -1,2 +1,3 @@
 *.exe
 payload.json
+/notes

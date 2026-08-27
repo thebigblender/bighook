@@ -3,8 +3,9 @@ CREATE TABLE deliveries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(id),
     endpoint_id UUID NOT NULL REFERENCES endpoints(id),
-    status TEXT NOT NULL DEFAULT 'pending', -- pending, in_flight, delivered, failed, dead
+    status TEXT NOT NULL DEFAULT 'pending', -- pending, in_flight, delivered, dead
     attempt_count INTEGER NOT NULL DEFAULT 0,
+    reap_count INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
