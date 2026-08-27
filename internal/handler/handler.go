@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
@@ -27,16 +27,26 @@ type IngestionResponse struct {
 	Status     string `json:"status"`
 }
 
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
+func sendJSONError(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(ErrorResponse{Error: message})
+}
+
 func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // limit to 1MB
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 		var req IngestionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			log.Warn().Err(err).Msg("failed to decode request body")
-			http.Error(w, `{"error":"invalid JSON or body exceeds 1MB"}`, http.StatusBadRequest)
+			sendJSONError(w, "invalid JSON or body exceeds 1MB", http.StatusBadRequest)
 			return
 		}
 
@@ -49,13 +59,12 @@ func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.L
 				Str("endpoint_id", req.EndpointID).
 				Str("event_type", req.EventType).
 				Msg("request validation failed")
-			http.Error(w, `{"error":"validation failed"}`, http.StatusBadRequest)
+			sendJSONError(w, "validation failed", http.StatusBadRequest)
 			return
 		}
 
 		pgEndpointID := pgtype.UUID{Bytes: endpointUUID, Valid: true}
 
-		// generate IDs
 		eventRaw := uuid.New()
 		deliveryRaw := uuid.New()
 		pgEventID := pgtype.UUID{Bytes: eventRaw, Valid: true}
@@ -68,31 +77,16 @@ func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.L
 			Str("event_type", req.EventType).
 			Logger()
 
-		// transaction
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			reqLog.Error().Err(err).Msg("failed to start transaction")
-			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			sendJSONError(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		defer tx.Rollback(ctx)
 
 		qtx := queries.WithTx(tx)
 
-		// check endpoint exists
-		_, err = qtx.GetEndpointByID(ctx, pgEndpointID)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				reqLog.Warn().Msg("endpoint not found")
-				http.Error(w, `{"error":"endpoint not found"}`, http.StatusNotFound)
-			} else {
-				reqLog.Error().Err(err).Msg("database error looking up endpoint")
-				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
-			}
-			return
-		}
-
-		// insert event
 		err = qtx.InsertEvent(ctx, db.InsertEventParams{
 			ID:         pgEventID,
 			EndpointID: pgEndpointID,
@@ -100,12 +94,17 @@ func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.L
 			Payload:    []byte(req.Payload),
 		})
 		if err != nil {
-			reqLog.Error().Err(err).Msg("failed to insert event")
-			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign key violation
+				reqLog.Warn().Msg("endpoint not found")
+				sendJSONError(w, "endpoint not found", http.StatusNotFound)
+			} else {
+				reqLog.Error().Err(err).Msg("failed to insert event")
+				sendJSONError(w, "internal server error", http.StatusInternalServerError)
+			}
 			return
 		}
 
-		// insert delivery
 		err = qtx.InsertDelivery(ctx, db.InsertDeliveryParams{
 			ID:         pgDeliveryID,
 			EventID:    pgEventID,
@@ -113,13 +112,13 @@ func HandleIngestionEvent(pool *pgxpool.Pool, queries *db.Queries, log zerolog.L
 		})
 		if err != nil {
 			reqLog.Error().Err(err).Msg("failed to schedule delivery")
-			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			sendJSONError(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		if err := tx.Commit(ctx); err != nil {
 			reqLog.Error().Err(err).Msg("failed to commit ingestion transaction")
-			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			sendJSONError(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
