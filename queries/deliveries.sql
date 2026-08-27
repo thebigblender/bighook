@@ -1,6 +1,6 @@
 -- name: InsertDelivery :exec
-INSERT INTO deliveries (id, event_id, endpoint_id, status, attempt_count, next_attempt_at, created_at, updated_at)
-VALUES ($1, $2, $3, 'pending', 0, NOW(), NOW(), NOW());
+INSERT INTO deliveries (id, event_id, endpoint_id, status, attempt_count, reap_count, next_attempt_at, created_at, updated_at)
+VALUES ($1, $2, $3, 'pending', 0, 0, NOW(), NOW(), NOW());
 
 
 -- name: MarkDelivered :exec
@@ -54,7 +54,11 @@ WHERE id = $1;
 
 -- name: ReapStuckDeliveries :exec
 UPDATE deliveries
-SET status = 'pending',
+SET status = CASE
+        WHEN reap_count + 1 >= $2 THEN 'dead'
+        ELSE 'pending'
+    END,
+    reap_count = reap_count + 1,
     updated_at = NOW()
 WHERE status = 'in_flight'
-AND updated_at < NOW() - INTERVAL '10 minutes';
+AND updated_at < $1;
